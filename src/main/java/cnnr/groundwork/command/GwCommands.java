@@ -1,5 +1,6 @@
 package cnnr.groundwork.command;
 
+import cnnr.groundwork.Groundwork;
 import cnnr.groundwork.network.PlanSync;
 import cnnr.groundwork.selection.CaptureService;
 import cnnr.groundwork.selection.CaptureService.Plan;
@@ -9,6 +10,7 @@ import com.mojang.brigadier.CommandDispatcher;
 import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
@@ -28,6 +30,11 @@ public final class GwCommands {
                 p.getInventory().add(wand);
                 ctx.getSource().sendSuccess(() -> Component.literal("Got the Groundwork Wand. Left-click = corner A, right-click = corner B."), false);
                 return 1;
+            }))
+            .then(Commands.literal("wisp").executes(ctx -> {
+                ServerPlayer p = ctx.getSource().getPlayerOrException();
+                BlockPos pos = p.blockPosition();
+                return Groundwork.placeWisp(p, pos) ? 1 : 0;
             }))
             .then(Commands.literal("capture")
                 .then(Commands.literal("on").executes(ctx -> {

@@ -16,6 +16,8 @@ public final class GhostLabelHud {
     public static void register() {
         HudElementRegistry.attachElementAfter(VanillaHudElements.CROSSHAIR, Groundwork.id("ghost_label"),
             (guiGraphicsExtractor, deltaTracker) -> {
+                if (!ClientBuildVision.isActive()) return;
+
                 Minecraft mc = Minecraft.getInstance();
                 LocalPlayer player = mc.player;
                 if (player == null || mc.level == null) return;

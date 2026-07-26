@@ -22,6 +22,8 @@ public final class PlanRenderer {
 
     public static void register() {
         LevelRenderEvents.BEFORE_GIZMOS.register(context -> {
+            if (!ClientBuildVision.isActive()) return;
+
             Map<UUID, List<PlanSyncPayload.Entry>> plans = ClientPlanStore.get().getPlans();
             if (plans.isEmpty()) return;
 
