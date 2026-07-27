@@ -20,7 +20,7 @@ public final class ModBlocks {
             .setId(wispKey)
             .noCollision()
             .noOcclusion()
-            .instabreak()
+            .strength(1.5f)
             .noLootTable()
             .pushReaction(PushReaction.IGNORE);
         WISP_BLOCK = new WispBlock(props);

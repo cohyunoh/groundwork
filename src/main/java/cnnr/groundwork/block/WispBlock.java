@@ -28,4 +28,10 @@ public class WispBlock extends BaseEntityBlock {
     @Override protected VoxelShape getCollisionShape(BlockState state, BlockGetter level, BlockPos pos, CollisionContext ctx) {
         return Shapes.empty();
     }
+
+    // Deliberately NOT overriding getShape(): it must stay the default full cube (Shapes.block()),
+    // since that's the shape the crosshair raycast (ClipContext.Block.OUTLINE, used for both
+    // targeting and breaking) hit-tests against. Emptying it would make the wisp unclickable.
+    // The vanilla debug outline box this shape would otherwise draw is suppressed client-side
+    // (see GroundworkClient's BEFORE_BLOCK_OUTLINE registration) in favor of our own renderer.
 }

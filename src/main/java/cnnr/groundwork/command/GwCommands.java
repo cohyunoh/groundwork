@@ -1,12 +1,16 @@
 package cnnr.groundwork.command;
 
 import cnnr.groundwork.Groundwork;
+import cnnr.groundwork.block.WispBlockEntity;
 import cnnr.groundwork.network.PlanSync;
 import cnnr.groundwork.selection.CaptureService;
 import cnnr.groundwork.selection.CaptureService.Plan;
 import cnnr.groundwork.selection.Selection;
 import cnnr.groundwork.selection.SelectionService;
+import cnnr.groundwork.vision.RegionEditService;
 import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.context.CommandContext;
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
@@ -14,9 +18,14 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.Vec3;
 
 public final class GwCommands {
     private GwCommands() {}
@@ -36,6 +45,9 @@ public final class GwCommands {
                 BlockPos pos = p.blockPosition();
                 return Groundwork.placeWisp(p, pos) ? 1 : 0;
             }))
+            .then(Commands.literal("corner")
+                .then(Commands.literal("a").executes(ctx -> setRegionCorner(ctx, true)))
+                .then(Commands.literal("b").executes(ctx -> setRegionCorner(ctx, false))))
             .then(Commands.literal("capture")
                 .then(Commands.literal("on").executes(ctx -> {
                     ServerPlayer p = ctx.getSource().getPlayerOrException();
@@ -152,5 +164,53 @@ public final class GwCommands {
                     + " | plan: " + planStr), false);
                 return 1;
             })));
+    }
+
+    private static int setRegionCorner(CommandContext<CommandSourceStack> ctx, boolean isA) throws CommandSyntaxException {
+        ServerPlayer p = ctx.getSource().getPlayerOrException();
+        MinecraftServer server = ctx.getSource().getServer();
+        BlockPos wispPos = RegionEditService.get(server).getEditing(p.getUUID());
+        if (wispPos == null) {
+            ctx.getSource().sendFailure(Component.literal("Right-click a wisp with the Lens first (in Builder Vision)."));
+            return 0;
+        }
+
+        ServerLevel level = p.level();
+        if (!(level.getBlockEntity(wispPos) instanceof WispBlockEntity wisp)) {
+            ctx.getSource().sendFailure(Component.literal("That wisp is gone."));
+            RegionEditService.get(server).stopEditing(p.getUUID());
+            return 0;
+        }
+
+        BlockPos point = freeSpacePoint(p, level);
+        Selection region = wisp.getRegion();
+        if (isA) region.setCornerA(point, level.dimension());
+        else region.setCornerB(point, level.dimension());
+        wisp.setRegion(region);
+
+        String label = isA ? "Corner A" : "Corner B";
+        StringBuilder msg = new StringBuilder(label + " set: " + point.getX() + ", " + point.getY() + ", " + point.getZ());
+        if (region.isComplete()) {
+            BlockPos mn = region.min(), mx = region.max();
+            msg.append("  |  region ").append(mx.getX() - mn.getX() + 1).append("x").append(mx.getY() - mn.getY() + 1)
+               .append("x").append(mx.getZ() - mn.getZ() + 1).append(" (").append(region.volume()).append(" blocks)");
+        }
+        String finalMsg = msg.toString();
+        ctx.getSource().sendSuccess(() -> Component.literal(finalMsg).withStyle(ChatFormatting.AQUA), false);
+        return 1;
+    }
+
+    /** A point in world space along the player's look ray: the first block hit, or a fixed max
+     *  range if nothing's there — so corners can land in open air (below floors, in open sky). */
+    private static BlockPos freeSpacePoint(ServerPlayer p, ServerLevel level) {
+        Vec3 eye = p.getEyePosition(1.0f);
+        Vec3 look = p.getViewVector(1.0f);
+        double range = 32.0;
+        Vec3 to = eye.add(look.scale(range));
+
+        ClipContext clipContext = new ClipContext(eye, to, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, p);
+        BlockHitResult hit = level.clip(clipContext);
+        Vec3 point = hit.getType() == HitResult.Type.MISS ? to : hit.getLocation();
+        return BlockPos.containing(point);
     }
 }

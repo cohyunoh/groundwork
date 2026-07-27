@@ -3,6 +3,7 @@ package cnnr.groundwork;
 import cnnr.groundwork.block.ModBlockEntities;
 import cnnr.groundwork.block.ModBlocks;
 import cnnr.groundwork.block.WispBlockEntity;
+import cnnr.groundwork.block.WispTraceVisualizer;
 import cnnr.groundwork.command.GwCommands;
 import cnnr.groundwork.item.ModItems;
 import cnnr.groundwork.network.BuildVisionPayload;
@@ -10,10 +11,12 @@ import cnnr.groundwork.network.PlanSyncPayload;
 import cnnr.groundwork.selection.SelectionService;
 import cnnr.groundwork.selection.SelectionVisualizer;
 import cnnr.groundwork.vision.BuildVisionService;
+import cnnr.groundwork.vision.RegionEditService;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.event.player.AttackBlockCallback;
+import net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
 import net.fabricmc.fabric.api.event.player.UseItemCallback;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
@@ -67,7 +70,14 @@ public class Groundwork implements ModInitializer {
 					if (sp.isShiftKeyDown()) {
 						placeWisp(sp, hitResult.getBlockPos().relative(hitResult.getDirection()));
 					} else {
-						toggleBuildVision(sp);
+						BlockPos clicked = hitResult.getBlockPos();
+						boolean clickedWisp = sp.level().getBlockState(clicked).getBlock() == ModBlocks.WISP_BLOCK;
+						boolean inVision = BuildVisionService.get(sp.level().getServer()).isActive(sp.getUUID());
+						if (clickedWisp && inVision) {
+							enterRegionEdit(sp, clicked);
+						} else {
+							toggleBuildVision(sp);
+						}
 					}
 					return InteractionResult.SUCCESS;
 				}
@@ -104,8 +114,25 @@ public class Groundwork implements ModInitializer {
 		});
 
 		// Build-vision is session-only: clear it on logout so a reconnect always starts OFF.
-		ServerPlayConnectionEvents.DISCONNECT.register((handler, server) ->
-				BuildVisionService.get(server).clear(handler.player.getUUID()));
+		ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
+			BuildVisionService.get(server).clear(handler.player.getUUID());
+			RegionEditService.get(server).stopEditing(handler.player.getUUID());
+		});
+
+		// A wisp can only be removed while wearing Builder Vision -- retiring it is a deliberate ritual.
+		PlayerBlockBreakEvents.BEFORE.register((world, player, pos, state, blockEntity) -> {
+			if (state.getBlock() != ModBlocks.WISP_BLOCK) return true;
+			if (world.isClientSide()) return true; // let the server decide
+			if (player instanceof ServerPlayer sp) {
+				boolean inVision = BuildVisionService.get(sp.level().getServer()).isActive(sp.getUUID());
+				if (!inVision) {
+					sp.sendOverlayMessage(Component.literal("Put on the Surveyor's Lens to remove a wisp.")
+							.withStyle(ChatFormatting.GRAY));
+					return false;
+				}
+			}
+			return true;
+		});
 
 		CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) ->
 				GwCommands.register(dispatcher));
@@ -113,8 +140,12 @@ public class Groundwork implements ModInitializer {
 		// Debug-only particle outline of each player's selection, throttled to 4x/sec.
 		int[] tickCounter = {0};
 		ServerTickEvents.END_SERVER_TICK.register(server -> {
-			if (tickCounter[0]++ % 5 == 0) {
+			int tick = tickCounter[0]++;
+			if (tick % 5 == 0) {
 				SelectionVisualizer.tick(server);
+			}
+			if (tick % 30 == 0) {
+				WispTraceVisualizer.tick(server);
 			}
 		});
 	}
@@ -132,6 +163,12 @@ public class Groundwork implements ModInitializer {
 		}
 		sp.sendOverlayMessage(Component.literal("Wisp established.").withStyle(ChatFormatting.LIGHT_PURPLE));
 		return true;
+	}
+
+	private static void enterRegionEdit(ServerPlayer sp, BlockPos wispPos) {
+		RegionEditService.get(sp.level().getServer()).startEditing(sp.getUUID(), wispPos);
+		sp.sendOverlayMessage(Component.literal("Editing wisp region — set two corners (/gw corner a, /gw corner b).")
+				.withStyle(ChatFormatting.LIGHT_PURPLE));
 	}
 
 	private static void toggleBuildVision(ServerPlayer sp) {
