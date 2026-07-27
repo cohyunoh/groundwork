@@ -8,6 +8,7 @@ import cnnr.groundwork.selection.CaptureService.Plan;
 import cnnr.groundwork.selection.Selection;
 import cnnr.groundwork.selection.SelectionService;
 import cnnr.groundwork.vision.RegionEditService;
+import cnnr.groundwork.vision.WispSelectionService;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
@@ -48,6 +49,20 @@ public final class GwCommands {
             .then(Commands.literal("corner")
                 .then(Commands.literal("a").executes(ctx -> setRegionCorner(ctx, true)))
                 .then(Commands.literal("b").executes(ctx -> setRegionCorner(ctx, false))))
+            // Temporary manual test path for region-edit now that read-mode right-click selects
+            // instead of editing (see the MIGRATION note in Groundwork.java). Operates on whatever
+            // wisp is currently selected. Region-edit fully migrates into planning mode later.
+            .then(Commands.literal("edit").executes(ctx -> {
+                ServerPlayer p = ctx.getSource().getPlayerOrException();
+                MinecraftServer server = ctx.getSource().getServer();
+                BlockPos wispPos = WispSelectionService.get(server).getSelected(p.getUUID());
+                if (wispPos == null) {
+                    ctx.getSource().sendFailure(Component.literal("Select a wisp first (right-click it with the Lens)."));
+                    return 0;
+                }
+                Groundwork.enterRegionEdit(p, wispPos);
+                return 1;
+            }))
             .then(Commands.literal("capture")
                 .then(Commands.literal("on").executes(ctx -> {
                     ServerPlayer p = ctx.getSource().getPlayerOrException();
