@@ -15,6 +15,7 @@ import cnnr.groundwork.selection.Selection;
 import cnnr.groundwork.selection.SelectionService;
 import cnnr.groundwork.selection.SelectionVisualizer;
 import cnnr.groundwork.vision.BuildVisionService;
+import cnnr.groundwork.vision.PlanningSessionService;
 import cnnr.groundwork.vision.RegionEditService;
 import cnnr.groundwork.vision.WispSelectionService;
 import net.fabricmc.api.ModInitializer;
@@ -32,14 +33,21 @@ import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.component.DataComponents;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.level.GameType;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.portal.TeleportTransition;
+import net.minecraft.world.phys.Vec3;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -53,6 +61,10 @@ public class Groundwork implements ModInitializer {
 	public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
 	private static final Component WAND_NAME = Component.literal("Groundwork Wand");
+
+	// SPIKE: Planning Dimension. Fixed spot in the void workspace where a region's copy is placed.
+	private static final ResourceKey<Level> PLANNING_DIM = ResourceKey.create(Registries.DIMENSION, id("planning"));
+	private static final BlockPos WORK_ORIGIN = new BlockPos(0, 100, 0);
 
 	@Override
 	public void onInitialize() {
@@ -136,6 +148,7 @@ public class Groundwork implements ModInitializer {
 			BuildVisionService.get(server).clear(handler.player.getUUID());
 			RegionEditService.get(server).stopEditing(handler.player.getUUID());
 			WispSelectionService.get(server).clear(handler.player.getUUID());
+			PlanningSessionService.get(server).end(handler.player.getUUID());
 		});
 
 		// A wisp can only be removed while wearing Builder Vision -- retiring it is a deliberate ritual.
@@ -190,6 +203,97 @@ public class Groundwork implements ModInitializer {
 		ServerPlayNetworking.send(sp, new RegionEditPayload(true, wispPos));
 		sp.sendOverlayMessage(Component.literal("Editing wisp region — set two corners (/gw corner a, /gw corner b).")
 				.withStyle(ChatFormatting.LIGHT_PURPLE));
+	}
+
+	/** SPIKE: Planning Dimension. Copies the selected wisp's region into the planning dimension at
+	 *  a fixed work origin and teleports the player in (creative) to build. No diff/capture yet --
+	 *  this only tests whether the dimension + copy + teleport feels acceptable. */
+	public static void planTry(ServerPlayer sp) {
+		MinecraftServer server = sp.level().getServer();
+		BlockPos wispPos = WispSelectionService.get(server).getSelected(sp.getUUID());
+		if (wispPos == null) {
+			sp.sendOverlayMessage(Component.literal("Select a wisp first (right-click it with the Lens).")
+					.withStyle(ChatFormatting.RED));
+			return;
+		}
+
+		ServerLevel sourceLevel = sp.level();
+		if (!(sourceLevel.getBlockEntity(wispPos) instanceof WispBlockEntity wisp) || !wisp.hasRegion()) {
+			sp.sendOverlayMessage(Component.literal("Selected wisp has no region set.").withStyle(ChatFormatting.RED));
+			return;
+		}
+
+		ServerLevel planningLevel = server.getLevel(PLANNING_DIM);
+		if (planningLevel == null) {
+			sp.sendOverlayMessage(Component.literal("Planning dimension isn't loaded on this server.")
+					.withStyle(ChatFormatting.RED));
+			return;
+		}
+
+		Selection region = wisp.getRegion();
+		BlockPos min = region.min();
+		BlockPos max = region.max();
+		int sx = max.getX() - min.getX();
+		int sy = max.getY() - min.getY();
+		int sz = max.getZ() - min.getZ();
+		BlockPos copyMax = WORK_ORIGIN.offset(sx, sy, sz);
+
+		// Force-load the target chunks first -- an unloaded chunk would silently no-op setBlockAndUpdate.
+		int cx0 = Math.floorDiv(WORK_ORIGIN.getX(), 16), cx1 = Math.floorDiv(copyMax.getX(), 16);
+		int cz0 = Math.floorDiv(WORK_ORIGIN.getZ(), 16), cz1 = Math.floorDiv(copyMax.getZ(), 16);
+		for (int cx = cx0; cx <= cx1; cx++) {
+			for (int cz = cz0; cz <= cz1; cz++) {
+				planningLevel.getChunk(cx, cz);
+			}
+		}
+
+		for (int dx = 0; dx <= sx; dx++) {
+			for (int dy = 0; dy <= sy; dy++) {
+				for (int dz = 0; dz <= sz; dz++) {
+					planningLevel.setBlockAndUpdate(WORK_ORIGIN.offset(dx, dy, dz),
+							sourceLevel.getBlockState(min.offset(dx, dy, dz)));
+				}
+			}
+		}
+
+		PlanningSessionService.get(server).start(sp.getUUID(), new PlanningSessionService.Session(
+				sourceLevel.dimension(), sp.position(), sp.getYRot(), sp.getXRot(), WORK_ORIGIN, copyMax));
+
+		Vec3 placePos = new Vec3(WORK_ORIGIN.getX() + sx / 2.0 + 0.5, copyMax.getY() + 1.0, WORK_ORIGIN.getZ() + sz / 2.0 + 0.5);
+		sp.setGameMode(GameType.CREATIVE);
+		sp.teleport(new TeleportTransition(planningLevel, placePos, Vec3.ZERO, sp.getYRot(), sp.getXRot(), TeleportTransition.DO_NOTHING));
+		sp.sendOverlayMessage(Component.literal("Planning workspace ready -- build here, /gw plan back to return.")
+				.withStyle(ChatFormatting.LIGHT_PURPLE));
+	}
+
+	/** SPIKE: Planning Dimension. Returns the player to where they were before /gw plan try,
+	 *  restores survival, and clears the copied blocks so the workspace is clean next time. */
+	public static void planBack(ServerPlayer sp) {
+		MinecraftServer server = sp.level().getServer();
+		PlanningSessionService.Session session = PlanningSessionService.get(server).get(sp.getUUID());
+		if (session == null) {
+			sp.sendOverlayMessage(Component.literal("You're not in a planning workspace.").withStyle(ChatFormatting.RED));
+			return;
+		}
+
+		ServerLevel returnLevel = server.getLevel(session.returnDim());
+		if (returnLevel == null) {
+			sp.sendOverlayMessage(Component.literal("Can't find your original dimension.").withStyle(ChatFormatting.RED));
+			return;
+		}
+
+		ServerLevel planningLevel = server.getLevel(PLANNING_DIM);
+		if (planningLevel != null) {
+			for (BlockPos pos : BlockPos.betweenClosed(session.copyMin(), session.copyMax())) {
+				planningLevel.setBlockAndUpdate(pos, Blocks.AIR.defaultBlockState());
+			}
+		}
+
+		sp.setGameMode(GameType.SURVIVAL);
+		sp.teleport(new TeleportTransition(returnLevel, session.returnPos(), Vec3.ZERO,
+				session.returnYaw(), session.returnPitch(), TeleportTransition.DO_NOTHING));
+		PlanningSessionService.get(server).end(sp.getUUID());
+		sp.sendOverlayMessage(Component.literal("Returned. (Diff/plan-capture comes later.)").withStyle(ChatFormatting.LIGHT_PURPLE));
 	}
 
 	/** Read-mode focus: selects the wisp for the read-mode HUD (its region box + emphasized marker,

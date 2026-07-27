@@ -84,6 +84,18 @@ public final class GwCommands {
                 return 1;
             }))
             .then(Commands.literal("plan")
+                // SPIKE: Planning Dimension. Copies the selected wisp's region into a private void
+                // dimension and teleports you in to build; no diff/capture yet, purely a feel test.
+                .then(Commands.literal("try").executes(ctx -> {
+                    ServerPlayer p = ctx.getSource().getPlayerOrException();
+                    Groundwork.planTry(p);
+                    return 1;
+                }))
+                .then(Commands.literal("back").executes(ctx -> {
+                    ServerPlayer p = ctx.getSource().getPlayerOrException();
+                    Groundwork.planBack(p);
+                    return 1;
+                }))
                 .then(Commands.literal("save").executes(ctx -> {
                     ServerPlayer p = ctx.getSource().getPlayerOrException();
                     MinecraftServer server = ctx.getSource().getServer();
